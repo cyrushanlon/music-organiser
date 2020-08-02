@@ -2,24 +2,33 @@ package main
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/dhowden/tag"
 )
 
-//TODO: what to do about moana, Dr. Dre, starbound ost
-//TODO: if an album has multiple AlbumArtist in one folder, complain
-//TODO: how to create directory AC/DC
-//TODO: handle multiple CD albums
+//TODO: handle multiple CD albums and duplicates
+//TODO: do we care about "The Beatles" being "Beatles, The"?
+//TODO: what year to use for compilations?
+//TODO: delete source folders if everything worked
+//TODO: CLI
+//TODO: various folder confirmations
 
-var path = "/Users/cyrushanlon/Documents/Music"
-var outPath = "/Users/cyrushanlon/Documents/Out"
-var artists map[string]*artist
+var (
+	path    = "/Users/cyrushanlon/Documents/Music Copy"
+	outPath = "/Users/cyrushanlon/Documents/Out"
+
+	artists map[string]*artist
+)
+
+var (
+	hideErrors = false
+	dummy      = true
+)
 
 type artist struct {
 	albums map[string]*album
@@ -56,126 +65,202 @@ func getMostCommon(m map[string]int) string {
 	return name
 }
 
+func getFiles(p string) []os.FileInfo {
+	files, err := ioutil.ReadDir(p)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return files
+}
+
+func processDirectory(p string) error {
+
+	albumArtist := ""
+	albumName := ""
+	albumYear := 0
+
+	var art *artist
+	var ok bool
+
+	artistAppearedAs := make(map[string]int)
+	alb := &album{
+		path:       p,
+		appearedAs: make(map[string]int),
+	}
+
+	various := false
+
+	for _, file := range getFiles(p) {
+		if file.IsDir() {
+			err := processDirectory(p + "/" + file.Name())
+			if err != nil {
+				log.Fatal(err)
+			}
+			continue
+		}
+
+		f, err := os.Open(p + "/" + file.Name())
+		if err != nil {
+			return err
+		}
+
+		m, err := tag.ReadFrom(f)
+		if err != nil {
+			f.Close()
+			//if this file isnt a music file, we should keep crawling the folder
+			continue
+		}
+
+		//read the tags from the track
+		trackArtist := strings.Trim(strings.ReplaceAll(m.AlbumArtist(), "/", " "), " ")
+		if trackArtist == "" {
+			trackArtist = strings.Trim(strings.ReplaceAll(m.Artist(), "/", " "), " ")
+			if trackArtist == "" {
+				if !hideErrors {
+					fmt.Println("missing name:", p+"/"+file.Name())
+				}
+				f.Close()
+				return nil
+			}
+		}
+
+		trackAlbum := strings.Trim(strings.ReplaceAll(m.Album(), "/", " "), " ")
+		if trackAlbum == "" {
+			if !hideErrors {
+				fmt.Println("missing album:", p+"/"+file.Name())
+			}
+			f.Close()
+			return nil
+		}
+
+		trackYear := m.Year()
+		if trackYear == 0 {
+			if !hideErrors {
+				fmt.Println("missing year:", p+"/"+file.Name())
+			}
+			f.Close()
+			return nil
+		}
+
+		if strings.TrimPrefix(m.Title(), " ") == "" {
+			if !hideErrors {
+				fmt.Println("missing track title:", p+"/"+file.Name())
+			}
+			f.Close()
+			return nil
+		}
+
+		lowerTrackArtist := strings.ToLower(trackArtist)
+		lowerTrackAlbum := strings.ToLower(trackAlbum)
+
+		if !various {
+			if albumArtist == "" {
+				albumArtist = lowerTrackArtist
+			} else if albumArtist != lowerTrackArtist {
+				various = true
+			}
+			artistAppearedAs[trackArtist]++
+		}
+
+		mismatched := false
+		if albumName == "" {
+			albumName = lowerTrackAlbum
+		} else if albumName != lowerTrackAlbum {
+			//they should be the same in an album
+			mismatched = true
+		}
+		alb.appearedAs[trackAlbum]++
+
+		if albumYear == 0 {
+			albumYear = trackYear
+			alb.year = strconv.Itoa(trackYear)
+		} else if albumYear != trackYear {
+			//they should be the same in an album
+			mismatched = true
+		}
+
+		if mismatched && !strings.Contains(strings.ToLower(m.Comment()), "compilation") {
+			if !hideErrors {
+				fmt.Println("mismatched data:", p+"/"+file.Name())
+			}
+			f.Close()
+			return nil
+		}
+
+		f.Close()
+	}
+
+	if various {
+		albumArtist = "various"
+		artistAppearedAs = map[string]int{
+			"Various": 1,
+		}
+	}
+
+	if albumArtist != "" && albumName != "" && albumYear != 0 {
+		if art, ok = artists[albumArtist]; !ok {
+			art = &artist{
+				albums:     make(map[string]*album),
+				appearedAs: make(map[string]int),
+			}
+			artists[albumArtist] = art
+		}
+
+		if _, ok := art.albums[albumName]; ok {
+			if !hideErrors {
+				fmt.Println("duplicate album:", p)
+			}
+			return nil
+		}
+
+		art.albums[albumName] = alb
+
+		for k, v := range artistAppearedAs {
+			art.appearedAs[k] += v
+		}
+	}
+
+	return nil
+}
+
+var fileCount = 0
+
 func main() {
 
 	artists = make(map[string]*artist)
 
-	err := filepath.Walk(path,
-		func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
-			}
+	processDirectory(path)
 
-			if info.IsDir() {
-				return nil
-			}
+	fmt.Println("processed")
 
-			//get the extension of the file
-			fileName := info.Name()
-			ext := ""
-			for i := len(fileName) - 1; i >= 0; i-- {
-				if fileName[i] == '.' {
-					break
-				}
-				ext = string(fileName[i]) + ext
-			}
-
-			//not a music file so we dont care about it
-			if strings.ToLower(ext) != "mp3" && strings.ToLower(ext) != "mp4" && strings.ToLower(ext) != "flac" && strings.ToLower(ext) != "ogg" {
-				return nil
-			}
-
-			f, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer f.Close()
-
-			m, err := tag.ReadFrom(f)
-			if err != nil {
-				log.Println("missing tags:", path)
-				return nil
-			}
-
-			artistName := strings.TrimSpace(m.AlbumArtist())
-			if artistName == "" {
-				artistName = strings.TrimSpace(m.Artist())
-				if artistName == "" {
-					log.Println("missing name:", path)
-					return nil
-				}
-			}
-
-			albumName := strings.TrimSpace(m.Album())
-			if albumName == "" {
-				log.Println("missing album:", path)
-				return nil
-			}
-
-			albumYear := m.Year()
-			if albumYear == 0 {
-				log.Println("missing year:", path)
-				return nil
-			}
-
-			//get or create current artist/album
-			var art *artist
-			var alb *album
-			var ok bool
-
-			artistNameLower := strings.ToLower(artistName)
-			albumNameLower := strings.ToLower(albumName)
-
-			if art, ok = artists[artistNameLower]; !ok {
-				art = &artist{
-					albums:     make(map[string]*album),
-					appearedAs: make(map[string]int),
-				}
-				artists[artistNameLower] = art
-			}
-
-			if alb, ok = art.albums[albumNameLower]; !ok {
-				alb = &album{
-					appearedAs: make(map[string]int),
-					path:       path,
-					year:       strconv.Itoa(albumYear),
-				}
-				art.albums[albumNameLower] = alb
-			}
-
-			art.appearedAs[artistName]++
-			alb.appearedAs[albumName]++
-
-			return nil
-		})
-	if err != nil {
-		log.Println(err)
-	}
-
-	//sort the keys for display only
-	var keys []string
-	for k := range artists {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	for _, v := range keys {
-		for _, j := range artists[v].albums {
-			fmt.Println(artists[v].Name(), "-", j.Name())
-		}
-	}
-
+	albumCount := 0
+	fileCount := 0
 	// now that we have the album/artist structure and info, we build the corresponding output
-
 	os.MkdirAll(outPath, 0777)
 	for _, art := range artists {
+
 		artPath := outPath + "/" + art.Name()
 		os.Mkdir(artPath, 0777)
+		albumCount += len(art.albums)
 		for _, alb := range art.albums {
 			albPath := artPath + "/(" + alb.year + ") - " + alb.Name()
 			os.Mkdir(albPath, 0777)
+			//move the files
+			if !dummy {
+				files := getFiles(alb.path)
+				fileCount += len(files)
+				for _, v := range files {
+					if v.IsDir() { //there can be nested albums
+						continue
+					}
+					err := os.Rename(alb.path+"/"+v.Name(), albPath+"/"+v.Name())
+					if err != nil {
+						log.Println(err)
+					}
+				}
+			}
 		}
 	}
 
-	fmt.Println(len(artists), "artists")
+	fmt.Println(len(artists), "artists,", albumCount, "albums,", fileCount, "files")
 }
