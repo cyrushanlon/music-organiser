@@ -2,16 +2,15 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
 	"strings"
 
+	"github.com/cyrushanlon/music-organiser/file"
 	"github.com/dhowden/tag"
 )
 
-//TODO: handle multiple CD albums and duplicates
 //TODO: do we care about "The Beatles" being "Beatles, The"?
 //TODO: what year to use for compilations?
 //TODO: delete source folders if everything worked
@@ -19,15 +18,15 @@ import (
 //TODO: various folder confirmations
 
 var (
-	path    = "/Users/cyrushanlon/Documents/Music Copy"
-	outPath = "/Users/cyrushanlon/Documents/Out"
+	path    = "/Users/cyrushanlon/Documents/Music Raw"
+	outPath = "/Users/cyrushanlon/Documents/Music"
 
 	artists map[string]*artist
 )
 
 var (
 	hideErrors = false
-	dummy      = true
+	dummy      = false
 )
 
 type artist struct {
@@ -42,8 +41,11 @@ func (a *artist) Name() string {
 }
 
 type album struct {
-	path string
-	year string
+	path      string
+	year      string
+	disc      int
+	discTot   int
+	multiDisk bool
 
 	//holds the specific spelling of the albums name, most common is the one used
 	appearedAs map[string]int
@@ -65,19 +67,14 @@ func getMostCommon(m map[string]int) string {
 	return name
 }
 
-func getFiles(p string) []os.FileInfo {
-	files, err := ioutil.ReadDir(p)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return files
-}
-
 func processDirectory(p string) error {
 
 	albumArtist := ""
 	albumName := ""
 	albumYear := 0
+
+	albumDisc := 0
+	albumDiscTot := 0
 
 	var art *artist
 	var ok bool
@@ -86,11 +83,12 @@ func processDirectory(p string) error {
 	alb := &album{
 		path:       p,
 		appearedAs: make(map[string]int),
+		multiDisk:  true,
 	}
 
 	various := false
 
-	for _, file := range getFiles(p) {
+	for _, file := range file.GetAll(p) {
 		if file.IsDir() {
 			err := processDirectory(p + "/" + file.Name())
 			if err != nil {
@@ -110,6 +108,7 @@ func processDirectory(p string) error {
 			//if this file isnt a music file, we should keep crawling the folder
 			continue
 		}
+		mismatched := ""
 
 		//read the tags from the track
 		trackArtist := strings.Trim(strings.ReplaceAll(m.AlbumArtist(), "/", " "), " ")
@@ -142,6 +141,40 @@ func processDirectory(p string) error {
 			return nil
 		}
 
+		// no disc information is allowed, but if its a multi cd
+		// album it should be caught by the album duplication check
+		// if the album has multiple disks in the same folder, ignore disk info
+		if alb.multiDisk {
+			trackDisc, trackDiscTot := m.Disc()
+			if (trackDisc > 1 && (trackDiscTot == 0 || trackDisc > trackDiscTot)) || (trackDisc < 0) || (trackDiscTot < 0) {
+				if !hideErrors {
+					fmt.Println("missing disc info:", p+"/"+file.Name())
+				}
+				f.Close()
+				return nil
+			}
+
+			if trackDisc == 0 || trackDiscTot <= 1 && albumDisc != trackDisc {
+				// last condition more than likely means the album is multiple disks in the same folder
+				alb.multiDisk = false
+			} else {
+
+				//sort out the disc info for multi disc albums
+				if albumDisc == 0 {
+					albumDisc = trackDisc
+					alb.disc = trackDisc
+				}
+
+				if albumDiscTot == 0 {
+					albumDiscTot = trackDiscTot
+					alb.discTot = trackDiscTot
+				} else if albumDiscTot != trackDiscTot {
+					mismatched = "disk total"
+				}
+			}
+		}
+
+		//check the file has a track set
 		if strings.TrimPrefix(m.Title(), " ") == "" {
 			if !hideErrors {
 				fmt.Println("missing track title:", p+"/"+file.Name())
@@ -162,12 +195,11 @@ func processDirectory(p string) error {
 			artistAppearedAs[trackArtist]++
 		}
 
-		mismatched := false
 		if albumName == "" {
 			albumName = lowerTrackAlbum
 		} else if albumName != lowerTrackAlbum {
 			//they should be the same in an album
-			mismatched = true
+			mismatched = "album name"
 		}
 		alb.appearedAs[trackAlbum]++
 
@@ -176,12 +208,12 @@ func processDirectory(p string) error {
 			alb.year = strconv.Itoa(trackYear)
 		} else if albumYear != trackYear {
 			//they should be the same in an album
-			mismatched = true
+			mismatched = "album year"
 		}
 
-		if mismatched && !strings.Contains(strings.ToLower(m.Comment()), "compilation") {
+		if mismatched != "" && !strings.Contains(strings.ToLower(m.Comment()), "compilation") {
 			if !hideErrors {
-				fmt.Println("mismatched data:", p+"/"+file.Name())
+				fmt.Printf("mismatched %s:%s\n", mismatched, p+"/"+file.Name())
 			}
 			f.Close()
 			return nil
@@ -191,13 +223,18 @@ func processDirectory(p string) error {
 	}
 
 	if various {
-		albumArtist = "various"
+		albumArtist = "various artists"
 		artistAppearedAs = map[string]int{
-			"Various": 1,
+			"Various Artists": 1,
 		}
 	}
 
 	if albumArtist != "" && albumName != "" && albumYear != 0 {
+
+		if alb.multiDisk {
+			albumName = albumName + strconv.Itoa(alb.disc)
+		}
+
 		if art, ok = artists[albumArtist]; !ok {
 			art = &artist{
 				albums:     make(map[string]*album),
@@ -240,24 +277,35 @@ func main() {
 	for _, art := range artists {
 
 		artPath := outPath + "/" + art.Name()
-		os.Mkdir(artPath, 0777)
+		err := os.Mkdir(artPath, 0777)
+		if err != nil {
+			log.Println(err)
+		}
 		albumCount += len(art.albums)
 		for _, alb := range art.albums {
 			albPath := artPath + "/(" + alb.year + ") - " + alb.Name()
-			os.Mkdir(albPath, 0777)
+
+			if alb.multiDisk {
+				albPath += " - CD " + strconv.Itoa(alb.disc)
+			}
+
+			// err := os.MkdirAll(albPath, 0777)
+			// if err != nil {
+			// 	log.Println(err)
+			// }
 			//move the files
 			if !dummy {
-				files := getFiles(alb.path)
-				fileCount += len(files)
-				for _, v := range files {
-					if v.IsDir() { //there can be nested albums
-						continue
-					}
-					err := os.Rename(alb.path+"/"+v.Name(), albPath+"/"+v.Name())
-					if err != nil {
-						log.Println(err)
-					}
+				// files := file.GetAll(alb.path)
+				// fileCount += len(files)
+				// for _, v := range files {
+				// 	if v.IsDir() { //there can be nested albums
+				// 		continue
+				// 	}
+				err := os.Symlink(alb.path, albPath)
+				if err != nil {
+					log.Println(err)
 				}
+				// }
 			}
 		}
 	}
