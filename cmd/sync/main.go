@@ -18,11 +18,12 @@ import (
 //TODO: add toggle for special characters
 //TODO: when directory case changes the album is deleted and copied perpetually
 
-type FileInfo struct {
-	IsDir bool
+//TODO: make it more directory aware
 
+type fileInfo struct {
 	Size int64
 	Hash string
+	Path string
 }
 
 var originPath = "/Users/cyrushanlon/Documents/Music"
@@ -30,7 +31,7 @@ var remotePath = "/Volumes/THE CYPOD/Music"
 
 var wg = sync.WaitGroup{}
 
-func process(m map[string]FileInfo, rootPathLen int, path string, linkPath string) {
+func process(m map[string]fileInfo, rootPathLen int, path string, linkPath string) {
 	if linkPath == "" {
 		linkPath = path
 	}
@@ -57,15 +58,15 @@ func process(m map[string]FileInfo, rootPathLen int, path string, linkPath strin
 		//is a file
 		//get hash
 		// hash, _ := file.Hash(filePath)
-		m[filePath[rootPathLen:]] = FileInfo{
-			IsDir: false,
-			Size:  v.Size(),
+		m[strings.ToLower(filePath[rootPathLen:])] = fileInfo{
+			Path: filePath[rootPathLen:],
+			Size: v.Size(),
 			// Hash:  hash,
 		}
 	}
 }
 
-func getFileList(m map[string]FileInfo, path string) {
+func getFileList(m map[string]fileInfo, path string) {
 	process(m, len(path), path, "")
 	wg.Done()
 }
@@ -75,7 +76,7 @@ func main() {
 	wg.Add(2)
 
 	//build file list in origin
-	originMap := make(map[string]FileInfo)
+	originMap := make(map[string]fileInfo)
 	go func() {
 		s := time.Now()
 		fmt.Println("Building local file list...")
@@ -86,7 +87,7 @@ func main() {
 	}()
 
 	// build file list in remote
-	remoteMap := make(map[string]FileInfo)
+	remoteMap := make(map[string]fileInfo)
 	go func() {
 		s := time.Now()
 		fmt.Println("Building remote file list...")
@@ -102,6 +103,9 @@ func main() {
 
 	for k, r := range remoteMap {
 		if o, ok := originMap[k]; ok {
+			//fix casing if incorrect
+			file.FixCasing(o.Path, r.Path, originPath, remotePath)
+
 			//the file name exists at both, does the hash match?
 			if o.Size != r.Size {
 				// the file has changed at the origin
@@ -121,6 +125,8 @@ func main() {
 				delete(originMap, k)
 			}
 		} else {
+			//if the paths cases dont match rename and continue
+
 			// this file has been deleted at the origin
 			fmt.Println("Delete ", remotePath+k)
 
@@ -131,16 +137,19 @@ func main() {
 		}
 	}
 
-	for k := range originMap {
-		fmt.Println("Copy  ", originPath+k)
+	for _, v := range originMap {
+		fmt.Println("Copy   ", originPath+v.Path)
 
-		split := strings.Split(remotePath+k, "/")
-		err := os.MkdirAll(strings.Join(split[:len(split)-1], "/"), 0777)
+		remoteSplit := strings.Split(remotePath+v.Path, "/")
+
+		err := os.MkdirAll(strings.Join(remoteSplit[:len(remoteSplit)-1], "/"), 0777)
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		err = file.Copy(originPath+k, remotePath+k)
+		//get the parent directory of both and make sure the case is ok
+
+		err = file.Copy(originPath+v.Path, remotePath+v.Path)
 		if err != nil {
 			log.Fatal(err)
 		}

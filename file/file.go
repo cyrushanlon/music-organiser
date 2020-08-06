@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 )
 
 func GetAll(p string) []os.FileInfo {
@@ -57,4 +58,43 @@ func Copy(src string, dst string) error {
 	defer destination.Close()
 	_, err = io.Copy(destination, source)
 	return err
+}
+
+//IsEmpty returns true if a given directory is empty, false otherwise
+func IsEmpty(name string) (bool, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+
+	_, err = f.Readdirnames(1)
+	if err == io.EOF {
+		return true, nil
+	}
+	return false, err // Either not empty or error, suits both cases
+}
+
+// FixCasing ensures the casing of all files/folders in path remote are equal to that of path origin
+// applies the prefixes originPath to origin and remotePath to remote
+func FixCasing(origin, remote, originPath, remotePath string) {
+	splitOrigin := strings.Split(origin, "/")
+	splitRemote := strings.Split(remote, "/")
+	for i := len(splitOrigin) - 1; i > 0; i-- {
+		if splitOrigin[i] != splitRemote[i] {
+			fmt.Printf("Rename: \"%s\" to \"%s\"\n", splitRemote[i], splitOrigin[i])
+			//build up path to get to the thing that needs renaming
+			p := splitRemote[i]
+			r := splitOrigin[i]
+			for j := i - 1; j > 0; j-- {
+				p = splitRemote[j] + "/" + p
+				r = splitOrigin[j] + "/" + r
+			}
+			// fmt.Println(p)
+			err := os.Rename(remotePath+"/"+p, remotePath+"/"+r)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+	}
 }
