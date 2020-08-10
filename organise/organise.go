@@ -1,4 +1,4 @@
-package main
+package organise
 
 import (
 	"fmt"
@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cyrushanlon/music-organiser/file"
 	"github.com/dhowden/tag"
@@ -16,17 +17,10 @@ import (
 //TODO: delete source folders if everything worked
 //TODO: CLI
 //TODO: various folder confirmations
+//TODO: bug: duplicate artist if there is a subfolder in main artist folder(?)
 
 var (
-	path    = "/Users/cyrushanlon/Documents/Music Raw"
-	outPath = "/Users/cyrushanlon/Documents/Music"
-
 	artists map[string]*artist
-)
-
-var (
-	hideErrors = false
-	dummy      = false
 )
 
 type artist struct {
@@ -115,7 +109,7 @@ func processDirectory(p string) error {
 		if trackArtist == "" {
 			trackArtist = strings.Trim(strings.ReplaceAll(m.Artist(), "/", " "), " ")
 			if trackArtist == "" {
-				if !hideErrors {
+				if !hideErrorsLocal {
 					fmt.Println("missing name:", p+"/"+file.Name())
 				}
 				f.Close()
@@ -125,7 +119,7 @@ func processDirectory(p string) error {
 
 		trackAlbum := strings.Trim(strings.ReplaceAll(m.Album(), "/", " "), " ")
 		if trackAlbum == "" {
-			if !hideErrors {
+			if !hideErrorsLocal {
 				fmt.Println("missing album:", p+"/"+file.Name())
 			}
 			f.Close()
@@ -134,7 +128,7 @@ func processDirectory(p string) error {
 
 		trackYear := m.Year()
 		if trackYear == 0 {
-			if !hideErrors {
+			if !hideErrorsLocal {
 				fmt.Println("missing year:", p+"/"+file.Name())
 			}
 			f.Close()
@@ -147,7 +141,7 @@ func processDirectory(p string) error {
 		if alb.multiDisk {
 			trackDisc, trackDiscTot := m.Disc()
 			if (trackDisc > 1 && (trackDiscTot == 0 || trackDisc > trackDiscTot)) || (trackDisc < 0) || (trackDiscTot < 0) {
-				if !hideErrors {
+				if !hideErrorsLocal {
 					fmt.Println("missing disc info:", p+"/"+file.Name())
 				}
 				f.Close()
@@ -176,7 +170,7 @@ func processDirectory(p string) error {
 
 		//check the file has a track set
 		if strings.TrimPrefix(m.Title(), " ") == "" {
-			if !hideErrors {
+			if !hideErrorsLocal {
 				fmt.Println("missing track title:", p+"/"+file.Name())
 			}
 			f.Close()
@@ -212,7 +206,7 @@ func processDirectory(p string) error {
 		}
 
 		if mismatched != "" && !strings.Contains(strings.ToLower(m.Comment()), "compilation") {
-			if !hideErrors {
+			if !hideErrorsLocal {
 				fmt.Printf("mismatched %s:%s\n", mismatched, p+"/"+file.Name())
 			}
 			f.Close()
@@ -244,7 +238,7 @@ func processDirectory(p string) error {
 		}
 
 		if _, ok := art.albums[albumName]; ok {
-			if !hideErrors {
+			if !hideErrorsLocal {
 				fmt.Println("duplicate album:", p)
 			}
 			return nil
@@ -261,25 +255,30 @@ func processDirectory(p string) error {
 }
 
 var fileCount = 0
+var hideErrorsLocal bool
 
-func main() {
+//Do carries out the organise from the originPath to the remotePath
+func Do(originPath, remotePath string, hideErrors, dummy bool) error {
 
+	hideErrorsLocal = hideErrors
 	artists = make(map[string]*artist)
 
-	processDirectory(path)
-
-	fmt.Println("processed")
+	start := time.Now()
+	fmt.Println("processing...")
+	processDirectory(originPath)
+	fmt.Println("done in ", time.Since(start))
+	start = time.Now()
+	fmt.Println("creating file structure")
 
 	albumCount := 0
-	fileCount := 0
 	// now that we have the album/artist structure and info, we build the corresponding output
-	os.MkdirAll(outPath, 0777)
+	os.MkdirAll(remotePath, 0777)
 	for _, art := range artists {
 
-		artPath := outPath + "/" + art.Name()
+		artPath := remotePath + "/" + art.Name()
 		err := os.Mkdir(artPath, 0777)
 		if err != nil {
-			log.Println(err)
+			return err
 		}
 		albumCount += len(art.albums)
 		for _, alb := range art.albums {
@@ -291,7 +290,7 @@ func main() {
 
 			// err := os.MkdirAll(albPath, 0777)
 			// if err != nil {
-			// 	log.Println(err)
+			// 	return err
 			// }
 			//move the files
 			if !dummy {
@@ -303,12 +302,15 @@ func main() {
 				// 	}
 				err := os.Symlink(alb.path, albPath)
 				if err != nil {
-					log.Println(err)
+					return err
 				}
 				// }
 			}
 		}
 	}
 
-	fmt.Println(len(artists), "artists,", albumCount, "albums,", fileCount, "files")
+	fmt.Println("done in ", time.Since(start))
+
+	fmt.Println(len(artists), "artists,", albumCount, "albums,")
+	return nil
 }

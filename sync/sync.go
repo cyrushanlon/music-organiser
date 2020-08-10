@@ -1,8 +1,7 @@
-package main
+package sync
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,7 +15,6 @@ import (
 //TODO: handle errors
 //TODO: CLI
 //TODO: add toggle for special characters
-//TODO: when directory case changes the album is deleted and copied perpetually
 
 //TODO: make it more directory aware
 
@@ -25,9 +23,6 @@ type fileInfo struct {
 	Hash string
 	Path string
 }
-
-var originPath = "/Users/cyrushanlon/Documents/Music"
-var remotePath = "/Volumes/THE CYPOD/Music"
 
 var wg = sync.WaitGroup{}
 
@@ -71,8 +66,8 @@ func getFileList(m map[string]fileInfo, path string) {
 	wg.Done()
 }
 
-func main() {
-
+//Do carries out the syncronisation process from originPath to remotePath
+func Do(originPath, remotePath string) error {
 	wg.Add(2)
 
 	//build file list in origin
@@ -109,16 +104,16 @@ func main() {
 			//the file name exists at both, does the hash match?
 			if o.Size != r.Size {
 				// the file has changed at the origin
-				fmt.Println("Replace", remotePath+k)
+				fmt.Println("Replace", remotePath+r.Path)
 
 				err := os.Remove(remotePath + k)
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 
 				err = file.Copy(originPath+k, remotePath+k)
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 			} else {
 				//we can remove this file from the origin map now
@@ -128,11 +123,11 @@ func main() {
 			//if the paths cases dont match rename and continue
 
 			// this file has been deleted at the origin
-			fmt.Println("Delete ", remotePath+k)
+			fmt.Println("Delete ", remotePath+r.Path)
 
 			err := os.Remove(remotePath + k)
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 		}
 	}
@@ -144,18 +139,19 @@ func main() {
 
 		err := os.MkdirAll(strings.Join(remoteSplit[:len(remoteSplit)-1], "/"), 0777)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 
 		//get the parent directory of both and make sure the case is ok
 
 		err = file.Copy(originPath+v.Path, remotePath+v.Path)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 	}
 
 	//cleanup empty folders
 
 	fmt.Println("Done!")
+	return nil
 }
